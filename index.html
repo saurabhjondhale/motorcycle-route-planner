@@ -10,65 +10,182 @@
   #map { height:100%; width:100%; }
   #panel {
     position: fixed; top:10px; left:50%; transform:translateX(-50%);
-    background: rgba(255,255,255,0.9);
-    padding: 8px 12px; border-radius:12px;
+    background: rgba(255,255,255,0.95);
+    padding: 10px 12px; border-radius:12px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     z-index: 1000; font-size:0.9rem;
-    text-align:center;
+    text-align:center; width:90%; max-width:420px;
+  }
+  input {
+    width: 85%; padding: 5px; margin: 3px 0; border-radius: 6px; border: 1px solid #ccc;
   }
   button {
     background:#0078ff; border:none; color:white;
-    padding:6px 10px; border-radius:6px; margin:2px;
+    padding:6px 10px; border-radius:6px; margin:3px 2px;
   }
-  button:disabled { background:#888; }
+  button:disabled { background:#888; opacity:0.7; }
+  .inline-btns { display:flex; justify-content:center; gap:4px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
 
 <div id="panel">
   <b>🛵 Motorcycle Route Planner</b><br>
-  Tap map for Start, then Destination<br>
+
+  <!-- ORIGIN INPUT & BUTTONS -->
+  <input type="text" id="originInput" placeholder="Enter Origin (e.g. Pune Station)">
+  <div class="inline-btns">
+    <button id="originBtn">Set Origin</button>
+    <button id="locOriginBtn">📍 My Current Location</button>
+  </div>
+
+  <!-- DESTINATION INPUT -->
+  <input type="text" id="destInput" placeholder="Enter Destination (e.g. Lonavala)">
+  <button id="destBtn">Set Destination</button><br>
+
   <button id="clearBtn">Clear</button>
   <button id="routeBtn">Shortest Route</button>
   <button id="saveBtn" disabled>Download GPX</button>
-  <div id="status"></div>
+  <button id="navBtn" disabled>▶️ Start Navigation</button>
+  <div id="status" style="margin-top:4px;"></div>
 </div>
+
 <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-let map = L.map('map').setView([18.5204, 73.8567], 10); // Pune default
+let map = L.map('map').setView([18.5204, 73.8567], 10);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom:19, attribution:'© OpenStreetMap contributors'
 }).addTo(map);
 
-let points = [], markers = [], routeLayer = null, geojson = null;
+let points = []; // [origin, destination]
+let markers = [], routeLayer = null, geojson = null;
+
 const status = document.getElementById('status');
 const clearBtn = document.getElementById('clearBtn');
 const routeBtn = document.getElementById('routeBtn');
 const saveBtn = document.getElementById('saveBtn');
+const navBtn = document.getElementById('navBtn');
+const originInput = document.getElementById('originInput');
+const destInput = document.getElementById('destInput');
+const originBtn = document.getElementById('originBtn');
+const destBtn = document.getElementById('destBtn');
+const locOriginBtn = document.getElementById('locOriginBtn');
 
 function setStatus(msg){ status.innerHTML = msg; }
 
-map.on('click', e => {
-  if (points.length >= 2) return;
-  points.push([e.latlng.lat, e.latlng.lng]);
-  let label = points.length===1 ? 'Start' : 'Destination';
-  let marker = L.marker(e.latlng).addTo(map).bindPopup(label).openPopup();
-  markers.push(marker);
-  setStatus(points.length===2 ? 'Ready to calculate shortest route' : 'Select destination');
+// Enable Start Navigation once both points exist
+function updateNavButtonState() {
+  navBtn.disabled = !(points.length >= 2 && points[0] && points[1]);
+}
+
+// Add marker
+function addMarker(lat, lng, label, color) {
+  const icon = L.divIcon({
+    className: 'custom-div-icon',
+    html: `<div style="background:${color};width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>`,
+    iconSize:[12,12]
+  });
+  const m = L.marker([lat,lng],{icon}).addTo(map).bindPopup(label);
+  markers.push(m);
+  return m;
+}
+
+// Reverse-geocode coordinates → readable place name
+async function reverseGeocode(lat, lon) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.display_name || "My Current Location";
+  } catch {
+    return "My Current Location";
+  }
+}
+
+// Forward geocode (text → coordinates)
+async function geocodeAddress(address) {
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if(data.length===0) throw new Error('Address not found');
+  return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+}
+
+// 📍 My Current Location → Origin
+locOriginBtn.onclick = () => {
+  if (!navigator.geolocation) { setStatus('Geolocation not supported'); return; }
+  setStatus('Fetching your current location...');
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const {latitude, longitude} = pos.coords;
+    const readable = await reverseGeocode(latitude, longitude);
+    originInput.value = readable;
+    map.setView([latitude, longitude], 14);
+    addMarker(latitude, longitude, '📍 My Location (Origin)', 'green');
+    points[0] = [latitude, longitude];
+    updateNavButtonState();
+    setStatus('Current location set as Origin. Now set Destination.');
+  }, err=>setStatus('Location error: '+err.message));
+};
+
+// Origin via address
+originBtn.onclick = async ()=>{
+  try {
+    const addr = originInput.value.trim();
+    if(!addr){ setStatus('Enter origin address first.'); return; }
+    setStatus('Finding origin...');
+    const [lat, lon] = await geocodeAddress(addr);
+    addMarker(lat, lon, 'Origin', 'blue');
+    map.setView([lat, lon], 12);
+    points[0] = [lat, lon];
+    updateNavButtonState();
+    setStatus('Origin set.');
+  } catch(err){ setStatus('Error: '+err.message); }
+};
+
+// Destination
+destBtn.onclick = async ()=>{
+  try {
+    const addr = destInput.value.trim();
+    if(!addr){ setStatus('Enter destination address first.'); return; }
+    setStatus('Finding destination...');
+    const [lat, lon] = await geocodeAddress(addr);
+    addMarker(lat, lon, 'Destination', 'red');
+    map.setView([lat, lon], 12);
+    points[1] = [lat, lon];
+    updateNavButtonState();
+    setStatus('Destination set.');
+  } catch(err){ setStatus('Error: '+err.message); }
+};
+
+// Map click
+map.on('click', e=>{
+  if(points.length<2){
+    const lat = e.latlng.lat, lon = e.latlng.lng;
+    const label = points.length===0?'Origin':'Destination';
+    const color = points.length===0?'blue':'red';
+    addMarker(lat, lon, label, color);
+    points.push([lat, lon]);
+    updateNavButtonState();
+    setStatus(`${label} selected. ${points.length===1?'Now select Destination.':'Ready to route.'}`);
+  }
 });
 
+// Clear
 clearBtn.onclick = ()=>{
   points=[]; markers.forEach(m=>map.removeLayer(m)); markers=[];
   if(routeLayer){ map.removeLayer(routeLayer); routeLayer=null; }
-  saveBtn.disabled=true; geojson=null; setStatus('');
+  saveBtn.disabled=true; navBtn.disabled=true; geojson=null;
+  originInput.value=''; destInput.value='';
+  setStatus('');
 };
 
+// Route
 routeBtn.onclick = async ()=>{
-  if(points.length<2){ setStatus('Select start and destination first.'); return; }
-  const [s,d]=points;
-  setStatus('Finding shortest route...');
+  if(points.length<2){ setStatus('Set both origin and destination first.'); return; }
+  const [s,d] = points;
+  setStatus('Computing route...');
   const url=`https://router.project-osrm.org/route/v1/driving/${s[1]},${s[0]};${d[1]},${d[0]}?overview=full&geometries=geojson`;
   try{
     const res=await fetch(url);
@@ -77,14 +194,16 @@ routeBtn.onclick = async ()=>{
     const route=data.routes[0];
     const coords=route.geometry.coordinates.map(c=>[c[1],c[0]]);
     if(routeLayer) map.removeLayer(routeLayer);
-    routeLayer=L.polyline(coords,{color:'blue',weight:5}).addTo(map);
+    routeLayer=L.polyline(coords,{color:'dodgerblue',weight:5}).addTo(map);
     map.fitBounds(routeLayer.getBounds(),{padding:[40,40]});
-    setStatus(`Shortest route: ${(route.distance/1000).toFixed(1)} km, ${(route.duration/60).toFixed(0)} min`);
     geojson=route.geometry;
     saveBtn.disabled=false;
+    navBtn.disabled=false;
+    setStatus(`Shortest route: ${(route.distance/1000).toFixed(1)} km, ${(route.duration/60).toFixed(0)} min`);
   }catch(err){ setStatus('Error: '+err.message); }
 };
 
+// GPX
 saveBtn.onclick = ()=>{
   if(!geojson) return;
   const coords=geojson.coordinates;
@@ -97,7 +216,20 @@ saveBtn.onclick = ()=>{
   a.href=url; a.download='route.gpx';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-  setStatus('GPX file downloaded');
+  setStatus('GPX downloaded.');
+};
+
+// Navigation
+navBtn.onclick = () => {
+  if(points.length<2){ setStatus('Set both origin and destination first.'); return; }
+  const [s, d] = points;
+  const start = `${s[0]},${s[1]}`;
+  const dest = `${d[0]},${d[1]}`;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const url = isIOS 
+    ? `https://maps.apple.com/?saddr=${start}&daddr=${dest}&dirflg=d`
+    : `https://www.google.com/maps/dir/?api=1&origin=${start}&destination=${dest}&travelmode=driving`;
+  window.open(url, '_blank');
 };
 </script>
 </body>
