@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motorcycle Route Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html, body { margin:0; padding:0; height:100%; font-family:sans-serif; }
+  #map { height:100%; width:100%; }
+  #panel {
+    position: fixed; top:10px; left:50%; transform:translateX(-50%);
+    background: rgba(255,255,255,0.9);
+    padding: 8px 12px; border-radius:12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    z-index: 1000; font-size:0.9rem;
+    text-align:center;
+  }
+  button {
+    background:#0078ff; border:none; color:white;
+    padding:6px 10px; border-radius:6px; margin:2px;
+  }
+  button:disabled { background:#888; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <b>🛵 Motorcycle Route Planner</b><br>
+  Tap map for Start, then Destination<br>
+  <button id="clearBtn">Clear</button>
+  <button id="routeBtn">Shortest Route</button>
+  <button id="saveBtn" disabled>Download GPX</button>
+  <div id="status"></div>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let map = L.map('map').setView([18.5204, 73.8567], 10); // Pune default
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom:19, attribution:'© OpenStreetMap contributors'
+}).addTo(map);
+
+let points = [], markers = [], routeLayer = null, geojson = null;
+const status = document.getElementById('status');
+const clearBtn = document.getElementById('clearBtn');
+const routeBtn = document.getElementById('routeBtn');
+const saveBtn = document.getElementById('saveBtn');
+
+function setStatus(msg){ status.innerHTML = msg; }
+
+map.on('click', e => {
+  if (points.length >= 2) return;
+  points.push([e.latlng.lat, e.latlng.lng]);
+  let label = points.length===1 ? 'Start' : 'Destination';
+  let marker = L.marker(e.latlng).addTo(map).bindPopup(label).openPopup();
+  markers.push(marker);
+  setStatus(points.length===2 ? 'Ready to calculate shortest route' : 'Select destination');
+});
+
+clearBtn.onclick = ()=>{
+  points=[]; markers.forEach(m=>map.removeLayer(m)); markers=[];
+  if(routeLayer){ map.removeLayer(routeLayer); routeLayer=null; }
+  saveBtn.disabled=true; geojson=null; setStatus('');
+};
+
+routeBtn.onclick = async ()=>{
+  if(points.length<2){ setStatus('Select start and destination first.'); return; }
+  const [s,d]=points;
+  setStatus('Finding shortest route...');
+  const url=`https://router.project-osrm.org/route/v1/driving/${s[1]},${s[0]};${d[1]},${d[0]}?overview=full&geometries=geojson`;
+  try{
+    const res=await fetch(url);
+    const data=await res.json();
+    if(!data.routes||!data.routes.length){ setStatus('No route found'); return; }
+    const route=data.routes[0];
+    const coords=route.geometry.coordinates.map(c=>[c[1],c[0]]);
+    if(routeLayer) map.removeLayer(routeLayer);
+    routeLayer=L.polyline(coords,{color:'blue',weight:5}).addTo(map);
+    map.fitBounds(routeLayer.getBounds(),{padding:[40,40]});
+    setStatus(`Shortest route: ${(route.distance/1000).toFixed(1)} km, ${(route.duration/60).toFixed(0)} min`);
+    geojson=route.geometry;
+    saveBtn.disabled=false;
+  }catch(err){ setStatus('Error: '+err.message); }
+};
+
+saveBtn.onclick = ()=>{
+  if(!geojson) return;
+  const coords=geojson.coordinates;
+  let gpx='<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="MotorcyclePlanner" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>route</name><trkseg>';
+  coords.forEach(([lon,lat])=>{ gpx+=`<trkpt lat="${lat}" lon="${lon}"></trkpt>`; });
+  gpx+='</trkseg></trk></gpx>';
+  const blob=new Blob([gpx],{type:'application/gpx+xml'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='route.gpx';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  setStatus('GPX file downloaded');
+};
+</script>
+</body>
+</html>
